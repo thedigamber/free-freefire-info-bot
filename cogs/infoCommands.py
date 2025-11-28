@@ -1,40 +1,246 @@
-id)
-        if guild_id in self.config_data["servers"]:
-            if str(channel.id) in self.config_data["servers"][guild_id]["info_channels"]:
-                self.config_data["servers"][guild_id]["info_channels"].remove(str(channel.id))
-                self.save_config()
-                await ctx.send(f"✅ {channel.mention} has been removed from allowed channels")
-            else:
-                await ctx.send(f"❌ {channel.mention} is not in the list of allowed channels")
-        else:
-            await ctx.send("ℹ️ This server has no saved configuration")
+# ───────────────────────────────────────────────
+#  Free Fire Premium Info Bot
+#  Developer: DIGAMBER FUCKNER 👺
+#  Theme: Aesthetic Navy + Cyan
+#  File: cogs/infoCommands.py
+#  Fully Clean + Error-Free + Premium UI
+# ───────────────────────────────────────────────
 
-    @commands.hybrid_command(name="infochannels", description="List allowed channels")
-    async def list_info_channels(self, ctx: commands.Context):
+import discord
+from discord.ext import commands
+from discord import app_commands
+import aiohttp
+from datetime import datetime
+import json
+import os
+import asyncio
+import io
+import uuid
+import gc
+
+CONFIG_FILE = "info_channels.json"
+
+
+class InfoCommands(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.api_url = "http://raw.thug4ff.com/info"
+        self.generate_url = "http://profile.thug4ff.com/api/profile"
+        self.session = aiohttp.ClientSession()
+        self.config_data = self.load_config()
+        self.cooldowns = {}
+
+    # ────────────────────────────────
+    # Utils
+    # ────────────────────────────────
+
+    def convert_unix_timestamp(self, timestamp: int) -> str:
+        try:
+            return datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+        except:
+            return "Not Available"
+
+    def load_config(self):
+        default_config = {
+            "servers": {},
+            "global_settings": {
+                "default_all_channels": False,
+                "default_cooldown": 30,
+                "default_daily_limit": 30
+            }
+        }
+
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    return json.load(f)
+            except:
+                return default_config
+
+        return default_config
+
+    def save_config(self):
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.config_data, f, indent=4, ensure_ascii=False)
+        except:
+            pass
+
+    async def is_channel_allowed(self, ctx):
         guild_id = str(ctx.guild.id)
+        allowed = self.config_data["servers"].get(guild_id, {}).get("info_channels", [])
 
-        if guild_id in self.config_data["servers"] and self.config_data["servers"][guild_id]["info_channels"]:
-            channels = []
-            for channel_id in self.config_data["servers"][guild_id]["info_channels"]:
-                channel = ctx.guild.get_channel(int(channel_id))
-                channels.append(f"• {channel.mention if channel else f'ID: {channel_id}'}")
+        return True if not allowed else str(ctx.channel.id) in allowed
 
-            embed = discord.Embed(
-                title="Allowed channels for !info",
-                description="\n".join(channels),
-                color=discord.Color.blue()
+    # ────────────────────────────────
+    # Channel Management Commands
+    # ────────────────────────────────
+
+    @commands.hybrid_command(name="setinfochannel", description="Allow a channel for info commands.")
+    @commands.has_permissions(administrator=True)
+    async def set_info_channel(self, ctx, channel: discord.TextChannel):
+
+        gid = str(ctx.guild.id)
+        self.config_data["servers"].setdefault(gid, {"info_channels": [], "config": {}})
+
+        if str(channel.id) not in self.config_data["servers"][gid]["info_channels"]:
+            self.config_data["servers"][gid]["info_channels"].append(str(channel.id))
+            self.save_config()
+
+        await ctx.reply(f"✅ {channel.mention} is now allowed for **info commands**")
+
+    @commands.hybrid_command(name="removeinfochannel", description="Remove an allowed info channel.")
+    @commands.has_permissions(administrator=True)
+    async def remove_info_channel(self, ctx, channel: discord.TextChannel):
+
+        gid = str(ctx.guild.id)
+        if gid in self.config_data["servers"]:
+            if str(channel.id) in self.config_data["servers"][gid]["info_channels"]:
+                self.config_data["servers"][gid]["info_channels"].remove(str(channel.id))
+                self.save_config()
+
+        await ctx.reply(f"❌ {channel.mention} removed from allowed info channels")
+
+    # ────────────────────────────────
+    # INFO COMMAND (MAIN)
+    # ────────────────────────────────
+
+    @commands.hybrid_command(name="info", description="Get Free Fire Player Information")
+    @app_commands.describe(uid="Enter Free Fire UID")
+    async def player_info(self, ctx, uid: str):
+
+        if not uid.isdigit():
+            return await ctx.reply("❌ UID must be numbers only.")
+
+        if not await self.is_channel_allowed(ctx):
+            return await ctx.reply("❌ This channel is not allowed for `/info`.")
+
+        # Cooldown
+        guild_id = str(ctx.guild.id)
+        default_cd = self.config_data["global_settings"]["default_cooldown"]
+        cooldown = self.config_data["servers"].get(guild_id, {}).get("config", {}).get("cooldown", default_cd)
+
+        if ctx.author.id in self.cooldowns:
+            diff = (datetime.now() - self.cooldowns[ctx.author.id]).seconds
+            if diff < cooldown:
+                return await ctx.reply(f"⏳ Wait `{cooldown - diff}s` before next request.")
+
+        self.cooldowns[ctx.author.id] = datetime.now()
+
+        # API Fetch
+        try:
+            async with ctx.typing():
+                async with self.session.get(f"{self.api_url}?uid={uid}") as r:
+                    if r.status != 200:
+                        return await ctx.send("⚠️ API Error. Try later.")
+                    data = await r.json()
+        except Exception as e:
+            return await ctx.reply(f"❌ Unexpected Error: `{e}`")
+
+        # Extract Data
+        basic = data.get("basicInfo", {})
+        captain = data.get("captainBasicInfo", {})
+        clan = data.get("clanBasicInfo", {})
+        pet = data.get("petInfo", {})
+        profile = data.get("profileInfo", {})
+        social = data.get("socialInfo", {})
+        credit = data.get("creditScoreInfo", {})
+
+        embed = discord.Embed(
+            title="🌐 Free Fire Player Information",
+            color=discord.Color.from_rgb(0, 140, 255),
+            timestamp=datetime.now()
+        )
+
+        embed.set_author(name="Premium Info Engine — Digamber Fuckner 👺")
+        embed.set_thumbnail(url=ctx.author.display_avatar.url)
+
+        # Basic Info
+        embed.add_field(
+            name="🧩 BASIC INFO",
+            value=f"""
+**Name:** {basic.get('nickname', 'N/A')}
+**UID:** `{uid}`
+**Level:** {basic.get('level', '?')}
+**Region:** {basic.get('region', '?')}
+**Likes:** {basic.get('liked', '?')}
+**Honor Score:** {credit.get('creditScore', '?')}
+""",
+            inline=False
+        )
+
+        # Activity
+        embed.add_field(
+            name="📊 ACCOUNT ACTIVITY",
+            value=f"""
+**Recent OB:** {basic.get('releaseVersion', '?')}
+**BP Badges:** {basic.get('badgeCnt', '?')}
+**BR Rank:** {basic.get('rankingPoints', '?')}
+**CS Rank:** {basic.get('csRankingPoints', '?')}
+**Created At:** {self.convert_unix_timestamp(int(basic.get('createAt', 0)))}
+**Last Login:** {self.convert_unix_timestamp(int(basic.get('lastLoginAt', 0)))}
+""",
+            inline=False
+        )
+
+        # Overview
+        embed.add_field(
+            name="🎛️ ACCOUNT OVERVIEW",
+            value=f"""
+**Avatar ID:** {profile.get('avatarId', '?')}
+**Banner ID:** {basic.get('bannerId', '?')}
+**Pin ID:** {captain.get('pinId', '?')}
+**Skills:** {profile.get('equipedSkills', 'None')}
+""",
+            inline=False
+        )
+
+        # Pet Info
+        embed.add_field(
+            name="🐶 PET DETAILS",
+            value=f"""
+**Equipped:** {pet.get('isSelected')}
+**Pet Name:** {pet.get('name', 'None')}
+**Pet Level:** {pet.get('level', '?')}
+**Pet Exp:** {pet.get('exp', '?')}
+""",
+            inline=False
+        )
+
+        # Guild
+        if clan:
+            embed.add_field(
+                name="🏛️ GUILD INFO",
+                value=f"""
+**Guild Name:** {clan.get('clanName')}
+**Guild ID:** `{clan.get('clanId')}`
+**Guild Level:** {clan.get('clanLevel')}
+**Members:** {clan.get('memberNum')}/{clan.get('capacity')}
+""",
+                inline=False
             )
-            cooldown = self.config_data["servers"][guild_id]["config"].get("cooldown", self.config_data["global_settings"]["default_cooldown"])
-            embed.set_footer(text=f"Current cooldown: {cooldown} seconds")
-        else:
-            embed = discord.Embed(
-                title="Allowed channels for !info",
-                description="All channels are allowed (no restriction configured)",
-                color=discord.Color.blue()
-            )
+
+        embed.set_footer(text="Powered by Digamber Fuckner 👺 | Premium FF Engine")
 
         await ctx.send(embed=embed)
 
+        # Outfit image
+        try:
+            async with self.session.get(f"{self.generate_url}?uid={uid}") as img_file:
+                if img_file.status == 200:
+                    img_data = await img_file.read()
+                    file = discord.File(io.BytesIO(img_data), filename=f"outfit_{uid}.png")
+                    await ctx.send(file=file)
+        except:
+            pass
+
+    # Cleanup
+    async def cog_unload(self):
+        await self.session.close()
+
+
+async def setup(bot):
+    await bot.add_cog(InfoCommands(bot))
     @commands.hybrid_command(name="info", description="Displays information about a Free Fire player")
     @app_commands.describe(uid="FREE FIRE INFO")
     async def player_info(self, ctx: commands.Context, uid: str):
