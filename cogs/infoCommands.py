@@ -1,109 +1,4 @@
-import discord
-from discord.ext import commands
-from discord import app_commands
-import aiohttp
-from datetime import datetime
-import json
-import os
-import asyncio
-import io
-import uuid
-import gc
-from datetime import datetime
-
-CONFIG_FILE = "info_channels.json"
-
-
-class InfoCommands(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.api_url = "http://raw.thug4ff.com/info"
-        self.generate_url = "http://profile.thug4ff.com/api/profile"
-        self.session = aiohttp.ClientSession()
-        self.config_data = self.load_config()
-        self.cooldowns = {}
-
-   
-
-    
-
-    def convert_unix_timestamp(self ,timestamp: int) -> str:
-        return datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
-
-
-
-    def check_request_limit(self, guild_id):
-        try:
-            return self.is_server_subscribed(guild_id) or not self.is_limit_reached(guild_id)
-        except Exception as e:
-            print(f"Error checking request limit: {e}")
-            return False
-
-    def load_config(self):
-        default_config = {
-            "servers": {},
-            "global_settings": {
-                "default_all_channels": False,
-                "default_cooldown": 30,
-                "default_daily_limit": 30
-            }
-        }
-
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, 'r') as f:
-                    loaded_config = json.load(f)
-                    loaded_config.setdefault("global_settings", {})
-                    loaded_config["global_settings"].setdefault("default_all_channels", False)
-                    loaded_config["global_settings"].setdefault("default_cooldown", 30)
-                    loaded_config["global_settings"].setdefault("default_daily_limit", 30)
-                    loaded_config.setdefault("servers", {})
-                    return loaded_config
-            except (json.JSONDecodeError, IOError) as e:
-                print(f"Error loading config: {e}")
-                return default_config
-        return default_config
-
-    def save_config(self):
-        try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.config_data, f, indent=4, ensure_ascii=False)
-        except IOError as e:
-            print(f"Error saving config: {e}")
-
-
-
-    async def is_channel_allowed(self, ctx):
-        try:
-            guild_id = str(ctx.guild.id)
-            allowed_channels = self.config_data["servers"].get(guild_id, {}).get("info_channels", [])
-
-            # Autoriser tous les salons si aucun salon n'a été configuré pour ce serveur
-            if not allowed_channels:
-                return True
-
-            # Sinon, vérifier si le salon actuel est dans la liste autorisée
-            return str(ctx.channel.id) in allowed_channels
-        except Exception as e:
-            print(f"Error checking channel permission: {e}")
-            return False
-
-    @commands.hybrid_command(name="setinfochannel", description="Allow a channel for !info commands")
-    @commands.has_permissions(administrator=True)
-    async def set_info_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        guild_id = str(ctx.guild.id)
-        self.config_data["servers"].setdefault(guild_id, {"info_channels": [], "config": {}})
-        if str(channel.id) not in self.config_data["servers"][guild_id]["info_channels"]:
-            self.config_data["servers"][guild_id]["info_channels"].append(str(channel.id))
-            self.save_config()
-            await ctx.send(f"✅ {channel.mention} is now allowed for `!info` commands")
-        else:
-            await ctx.send(f"ℹ️ {channel.mention} is already allowed for `!info` commands")
-
-    @commands.hybrid_command(name="removeinfochannel", description="Remove a channel from !info commands")
-    @commands.has_permissions(administrator=True)
-    async def remove_info_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        guild_id = str(ctx.guild.id)
+id)
         if guild_id in self.config_data["servers"]:
             if str(channel.id) in self.config_data["servers"][guild_id]["info_channels"]:
                 self.config_data["servers"][guild_id]["info_channels"].remove(str(channel.id))
@@ -311,4 +206,409 @@ class InfoCommands(commands.Cog):
 
 
 async def setup(bot):
+    await bot.add_cog(InfoCommands(bot))
+# cogs/infoCommands.py
+"""
+Rebranded InfoCommands Cog
+Author: Digamber Fuckner
+Theme: Aesthetic Navy + Cyan
+"""
+
+import os
+import json
+import io
+import uuid
+import gc
+import asyncio
+from datetime import datetime, timezone
+from typing import Optional, List, Tuple
+
+import aiohttp
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+CONFIG_FILE = "info_channels.json"
+
+# Theme colors (navy + cyan accents)
+EMBED_COLOR = 0x0F9AA6  # cyan-ish accent
+NAVY_COLOR = 0x0F172A
+
+def safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+def utc_from_unix(ts: int) -> Optional[datetime]:
+    try:
+        # ensure ts is int
+        ts_i = safe_int(ts, None)
+        if ts_i is None:
+            return None
+        return datetime.fromtimestamp(ts_i, tz=timezone.utc)
+    except Exception:
+        return None
+
+def format_unix(ts: int) -> str:
+    dt = utc_from_unix(ts)
+    if dt:
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    return "Not found"
+
+def is_interaction_ctx(ctx) -> bool:
+    # Determine if we are in an interaction context that supports ephemeral
+    return hasattr(ctx, "interaction") and ctx.interaction is not None
+
+def make_embed(
+    title: str,
+    description: Optional[str] = None,
+    fields: Optional[List[Tuple[str, str, bool]]] = None,
+    thumbnail: Optional[str] = None,
+    author_name: str = "Digamber Fuckner",
+    footer_text: Optional[str] = None,
+    color: int = EMBED_COLOR
+) -> discord.Embed:
+    e = discord.Embed(title=title, description=description or discord.Embed.Empty, color=color, timestamp=datetime.now(tz=timezone.utc))
+    if fields:
+        for name, value, inline in fields:
+            # keep field names and values safe
+            e.add_field(name=name or "\u200b", value=value or "—", inline=inline)
+    if thumbnail:
+        try:
+            e.set_thumbnail(url=thumbnail)
+        except Exception:
+            pass
+    e.set_author(name=author_name)
+    e.set_footer(text=footer_text or f"Rebranded by Digamber Fuckner • Aesthetic Navy + Cyan")
+    return e
+
+
+class InfoCommands(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        # Keep existing API endpoints
+        self.api_url = "http://raw.thug4ff.com/info"
+        self.generate_url = "http://profile.thug4ff.com/api/profile"
+        self.session: Optional[aiohttp.ClientSession] = None
+        # config holds server-specific allowed channels and settings
+        self.config_data = self.load_config()
+        # cooldowns per user (datetime)
+        self.cooldowns = {}
+        # ensure session created lazily
+        self._session_lock = asyncio.Lock()
+
+    async def _ensure_session(self):
+        if self.session is None or self.session.closed:
+            async with self._session_lock:
+                if self.session is None or self.session.closed:
+                    self.session = aiohttp.ClientSession()
+
+    def convert_unix_timestamp(self, timestamp) -> str:
+        # Accept strings or ints; return formatted UTC time or "Not found"
+        try:
+            return format_unix(timestamp)
+        except Exception:
+            return "Not found"
+
+    def load_config(self):
+        default_config = {
+            "servers": {},
+            "global_settings": {
+                "default_all_channels": False,
+                "default_cooldown": 30,
+                "default_daily_limit": 30
+            }
+        }
+
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    loaded_config = json.load(f)
+                    loaded_config.setdefault("global_settings", {})
+                    loaded_config["global_settings"].setdefault("default_all_channels", False)
+                    loaded_config["global_settings"].setdefault("default_cooldown", 30)
+                    loaded_config["global_settings"].setdefault("default_daily_limit", 30)
+                    loaded_config.setdefault("servers", {})
+                    return loaded_config
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"[infoCommands] Error loading config: {e}")
+                return default_config
+        return default_config
+
+    def save_config(self):
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.config_data, f, indent=4, ensure_ascii=False)
+        except IOError as e:
+            print(f"[infoCommands] Error saving config: {e}")
+
+    async def is_channel_allowed(self, ctx) -> bool:
+        try:
+            if not ctx.guild:
+                # allow in DMs for debug
+                return True
+            guild_id = str(ctx.guild.id)
+            allowed_channels = self.config_data["servers"].get(guild_id, {}).get("info_channels", [])
+            # If no channels configured, allow all channels
+            if not allowed_channels:
+                return True
+            return str(ctx.channel.id) in allowed_channels
+        except Exception as e:
+            print(f"[infoCommands] Error checking channel permission: {e}")
+            return False
+
+    @commands.hybrid_command(name="setinfochannel", description="Allow a channel for !info commands")
+    @commands.has_permissions(administrator=True)
+    async def set_info_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        guild_id = str(ctx.guild.id)
+        self.config_data["servers"].setdefault(guild_id, {"info_channels": [], "config": {}})
+        if str(channel.id) not in self.config_data["servers"][guild_id]["info_channels"]:
+            self.config_data["servers"][guild_id]["info_channels"].append(str(channel.id))
+            self.save_config()
+            await ctx.send(f"✅ {channel.mention} is now allowed for `!info` commands")
+        else:
+            await ctx.send(f"ℹ️ {channel.mention} is already allowed for `!info` commands")
+
+    @commands.hybrid_command(name="removeinfochannel", description="Remove a channel from !info commands")
+    @commands.has_permissions(administrator=True)
+    async def remove_info_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        guild_id = str(ctx.guild.id)
+        if guild_id in self.config_data["servers"]:
+            if str(channel.id) in self.config_data["servers"][guild_id]["info_channels"]:
+                self.config_data["servers"][guild_id]["info_channels"].remove(str(channel.id))
+                self.save_config()
+                await ctx.send(f"✅ {channel.mention} has been removed from allowed channels")
+            else:
+                await ctx.send(f"❌ {channel.mention} is not in the list of allowed channels")
+        else:
+            await ctx.send("ℹ️ This server has no saved configuration")
+
+    @commands.hybrid_command(name="infochannels", description="List allowed channels")
+    async def list_info_channels(self, ctx: commands.Context):
+        guild_id = str(ctx.guild.id) if ctx.guild else None
+
+        if guild_id and guild_id in self.config_data["servers"] and self.config_data["servers"][guild_id]["info_channels"]:
+            channels_display = []
+            for channel_id in self.config_data["servers"][guild_id]["info_channels"]:
+                ch = ctx.guild.get_channel(int(channel_id)) if ctx.guild else None
+                channels_display.append(f"• {ch.mention if ch else f'ID: {channel_id}'}")
+            cooldown = self.config_data["servers"][guild_id]["config"].get("cooldown", self.config_data["global_settings"]["default_cooldown"])
+            embed = make_embed(
+                title="Allowed channels for !info",
+                description="\n".join(channels_display),
+                fields=None,
+                author_name="Digamber Fuckner",
+                footer_text=f"Current cooldown: {cooldown} seconds",
+                color=NAVY_COLOR
+            )
+        else:
+            embed = make_embed(
+                title="Allowed channels for !info",
+                description="All channels are allowed (no restriction configured)",
+                author_name="Digamber Fuckner",
+                color=NAVY_COLOR
+            )
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="info", description="Displays information about a Free Fire player")
+    @app_commands.describe(uid="FREE FIRE UID (numbers only)")
+    async def player_info(self, ctx: commands.Context, uid: str):
+        # Basic validation
+        if not uid or not uid.isdigit() or len(uid) < 6:
+            # use reply for better context
+            return await ctx.reply("❌ Invalid UID! It must:\n- Contain only numbers\n- Have at least 6 digits", mention_author=False)
+
+        if not await self.is_channel_allowed(ctx):
+            # if invoked as interaction, attempt ephemeral reply via interaction response
+            if is_interaction_ctx(ctx):
+                try:
+                    await ctx.respond("❌ This command is not allowed in this channel.", ephemeral=True)
+                except Exception:
+                    await ctx.send("❌ This command is not allowed in this channel.")
+            else:
+                await ctx.send("❌ This command is not allowed in this channel.")
+            return
+
+        # Determine cooldown for server (fallback to global)
+        guild_id = str(ctx.guild.id) if ctx.guild else None
+        cooldown = self.config_data["global_settings"].get("default_cooldown", 30)
+        if guild_id and guild_id in self.config_data["servers"]:
+            cooldown = self.config_data["servers"][guild_id]["config"].get("cooldown", cooldown)
+
+        # Check per-user cooldown
+        user_id = getattr(ctx.author, "id", None)
+        if user_id in self.cooldowns:
+            last_used = self.cooldowns[user_id]
+            diff = (datetime.now(tz=timezone.utc) - last_used).total_seconds()
+            if diff < cooldown:
+                remaining = int(cooldown - diff)
+                # ephemeral where possible
+                if is_interaction_ctx(ctx):
+                    try:
+                        await ctx.respond(f"⏳ Please wait {remaining}s before using this command again", ephemeral=True)
+                    except Exception:
+                        await ctx.send(f"⏳ Please wait {remaining}s before using this command again")
+                else:
+                    await ctx.send(f"⏳ Please wait {remaining}s before using this command again")
+                return
+
+        # set cooldown timestamp
+        self.cooldowns[user_id] = datetime.now(tz=timezone.utc)
+
+        # perform API request
+        try:
+            await self._ensure_session()
+            async with ctx.typing():
+                url = f"{self.api_url}?uid={uid}"
+                async with self.session.get(url, timeout=20) as response:
+                    if response.status == 404:
+                        return await ctx.send(f"❌ Player with UID `{uid}` not found.")
+                    if response.status != 200:
+                        return await ctx.send("⚠️ API error. Try again later.")
+                    try:
+                        data = await response.json()
+                    except Exception:
+                        return await ctx.send("⚠️ API returned invalid data. Try again later.")
+
+            # Extract sections safely
+            basic_info = data.get("basicInfo", {}) or {}
+            captain_info = data.get("captainBasicInfo", {}) or {}
+            clan_info = data.get("clanBasicInfo", {}) or {}
+            credit_score_info = data.get("creditScoreInfo", {}) or {}
+            pet_info = data.get("petInfo", {}) or {}
+            profile_info = data.get("profileInfo", {}) or {}
+            social_info = data.get("socialInfo", {}) or {}
+
+            region = basic_info.get("region", "Not found")
+
+            # Build neat, readable fields (keeps one field but many lines for visual compactness)
+            basic_lines = [
+                "**┌  ACCOUNT BASIC INFO**",
+                f"**├─ Name**: {basic_info.get('nickname', 'Not found')}",
+                f"**├─ UID**: `{uid}`",
+                f"**├─ Level**: {basic_info.get('level', 'Not found')} (Exp: {basic_info.get('exp', '?')})",
+                f"**├─ Region**: {region}",
+                f"**├─ Likes**: {basic_info.get('liked', 'Not found')}",
+                f"**├─ Honor Score**: {credit_score_info.get('creditScore', 'Not found')}",
+                f"**└─ Signature**: {social_info.get('signature') or 'None'}"
+            ]
+
+            activity_lines = [
+                "**┌  ACCOUNT ACTIVITY**",
+                f"**├─ Most Recent OB**: {basic_info.get('releaseVersion', '?')}",
+                f"**├─ Current BP Badges**: {basic_info.get('badgeCnt', 'Not found')}",
+                f"**├─ BR Rank**: {basic_info.get('rankingPoints', 'Not found')}",
+                f"**├─ CS Rank**: {basic_info.get('csRankingPoints', 'Not found')}",
+                f"**├─ Created At**: {self.convert_unix_timestamp(basic_info.get('createAt'))}",
+                f"**└─ Last Login**: {self.convert_unix_timestamp(basic_info.get('lastLoginAt'))}"
+            ]
+
+            overview_lines = [
+                "**┌  ACCOUNT OVERVIEW**",
+                f"**├─ Avatar ID**: {profile_info.get('avatarId', 'Not found')}",
+                f"**├─ Banner ID**: {basic_info.get('bannerId', 'Not found')}",
+                f"**├─ Pin ID**: {captain_info.get('pinId', 'Not found') if captain_info else 'Default'}",
+                f"**└─ Equipped Skills**: {profile_info.get('equipedSkills', 'Not found')}"
+            ]
+
+            pet_lines = [
+                "**┌  PET DETAILS**",
+                f"**├─ Equipped?**: {'Yes' if pet_info.get('isSelected') else 'Not Found'}",
+                f"**├─ Pet Name**: {pet_info.get('name', 'Not Found')}",
+                f"**├─ Pet Exp**: {pet_info.get('exp', 'Not Found')}",
+                f"**└─ Pet Level**: {pet_info.get('level', 'Not Found')}"
+            ]
+
+            # Compose embed
+            thumbnail_url = ctx.author.display_avatar.url if getattr(ctx.author, "display_avatar", None) else None
+            embed = make_embed(
+                title="Player Information",
+                description="Premium rebrand — clean developer look.",
+                fields=[
+                    ("\u200b", "\n".join(basic_lines), False),
+                    ("\u200b", "\n".join(activity_lines), False),
+                    ("\u200b", "\n".join(overview_lines), False),
+                    ("\u200b", "\n".join(pet_lines), False),
+                ],
+                thumbnail=thumbnail_url,
+                author_name="Digamber Fuckner",
+                color=EMBED_COLOR
+            )
+
+            # If clan/guild exists, add as separate field
+            if clan_info:
+                guild_info = [
+                    "**┌  GUILD INFO**",
+                    f"**├─ Guild Name**: {clan_info.get('clanName', 'Not found')}",
+                    f"**├─ Guild ID**: `{clan_info.get('clanId', 'Not found')}`",
+                    f"**├─ Guild Level**: {clan_info.get('clanLevel', 'Not found')}",
+                    f"**├─ Live Members**: {clan_info.get('memberNum', 'Not found')}/{clan_info.get('capacity', '?')}"
+                ]
+                if captain_info:
+                    guild_info.extend([
+                        "**└─ Leader Info**:",
+                        f"    **├─ Leader Name**: {captain_info.get('nickname', 'Not found')}",
+                        f"    **├─ Leader UID**: `{captain_info.get('accountId', 'Not found')}`",
+                        f"    **├─ Leader Level**: {captain_info.get('level', 'Not found')} (Exp: {captain_info.get('exp', '?')})",
+                        f"    **├─ Last Login**: {self.convert_unix_timestamp(captain_info.get('lastLoginAt'))}",
+                        f"    **├─ Title**: {captain_info.get('title', 'Not found')}",
+                        f"    **├─ BP Badges**: {captain_info.get('badgeCnt', '?')}",
+                        f"    **├─ BR Rank**: {captain_info.get('rankingPoints', 'Not found')}",
+                        f"    **└─ CS Rank**: {captain_info.get('csRankingPoints', 'Not found')}"
+                    ])
+                embed.add_field(name="\u200b", value="\n".join(guild_info), inline=False)
+
+            await ctx.send(embed=embed)
+
+            # Try generating and sending profile image if available
+            if region and uid:
+                try:
+                    await self._ensure_session()
+                    image_url = f"{self.generate_url}?uid={uid}"
+                    async with self.session.get(image_url, timeout=30) as img_resp:
+                        if img_resp.status == 200:
+                            img_data = await img_resp.read()
+                            if img_data:
+                                buf = io.BytesIO(img_data)
+                                buf.seek(0)
+                                filename = f"outfit_{uuid.uuid4().hex[:8]}.png"
+                                file = discord.File(buf, filename=filename)
+                                await ctx.send(file=file)
+                        else:
+                            # log non-200 image responses for debugging
+                            print(f"[infoCommands] Image HTTP {img_resp.status} for uid={uid}")
+                except Exception as e:
+                    print(f"[infoCommands] Image generation failed: {e}")
+
+        except Exception as e:
+            # send error embed (safe)
+            err_embed = make_embed(
+                title="Unexpected error",
+                description=f"`{e}`",
+                author_name="Digamber Fuckner",
+                color=0xE74C3C
+            )
+            try:
+                await ctx.send(embed=err_embed)
+            except Exception:
+                # fallback to plain text
+                await ctx.send(f"Unexpected error: `{e}`")
+        finally:
+            # attempt GC but avoid heavy operations
+            try:
+                gc.collect()
+            except Exception:
+                pass
+
+    async def cog_unload(self):
+        # close session on unload
+        try:
+            if self.session and not self.session.closed:
+                await self.session.close()
+        except Exception as e:
+            print(f"[infoCommands] Error closing session: {e}")
+
+
+async def setup(bot: commands.Bot):
     await bot.add_cog(InfoCommands(bot))
